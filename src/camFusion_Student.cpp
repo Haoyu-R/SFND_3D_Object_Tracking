@@ -4,7 +4,7 @@
 #include <numeric>
 #include <opencv2/highgui/highgui.hpp>
 #include <opencv2/imgproc/imgproc.hpp>
-
+#include <set>
 #include "camFusion.hpp"
 #include "dataStructures.h"
 
@@ -20,6 +20,7 @@ void clusterLidarWithROI(std::vector<BoundingBox> &boundingBoxes, std::vector<Li
 
     for (auto it1 = lidarPoints.begin(); it1 != lidarPoints.end(); ++it1)
     {
+        
         // assemble vector for matrix-vector-multiplication
         X.at<double>(0, 0) = it1->x;
         X.at<double>(1, 0) = it1->y;
@@ -29,9 +30,9 @@ void clusterLidarWithROI(std::vector<BoundingBox> &boundingBoxes, std::vector<Li
         // project Lidar point into camera
         Y = P_rect_xx * R_rect_xx * RT * X;
         cv::Point pt;
-        pt.x = Y.at<double>(0, 0) / Y.at<double>(0, 2); // pixel coordinates
-        pt.y = Y.at<double>(1, 0) / Y.at<double>(0, 2);
-
+        pt.x = Y.at<double>(0, 0) / Y.at<double>(2, 0); // pixel coordinates
+        pt.y = Y.at<double>(1, 0) / Y.at<double>(2, 0);
+        
         vector<vector<BoundingBox>::iterator> enclosingBoxes; // pointers to all bounding boxes which enclose the current Lidar point
         for (vector<BoundingBox>::iterator it2 = boundingBoxes.begin(); it2 != boundingBoxes.end(); ++it2)
         {
@@ -49,7 +50,7 @@ void clusterLidarWithROI(std::vector<BoundingBox> &boundingBoxes, std::vector<Li
             }
 
         } // eof loop over all bounding boxes
-
+        
         // check wether point has been enclosed by one or by multiple boxes
         if (enclosingBoxes.size() == 1)
         { 
@@ -121,6 +122,7 @@ void show3DObjects(std::vector<BoundingBox> &boundingBoxes, cv::Size worldSize, 
     // display image
     string windowName = "3D Objects";
     cv::namedWindow(windowName, 1);
+    //cv::resize(topviewImg, topviewImg, cv::Size(200, 200));
     cv::imshow(windowName, topviewImg);
 
     if(bWait)
@@ -133,7 +135,10 @@ void show3DObjects(std::vector<BoundingBox> &boundingBoxes, cv::Size worldSize, 
 // associate a given bounding box with the keypoints it contains
 void clusterKptMatchesWithROI(BoundingBox &boundingBox, std::vector<cv::KeyPoint> &kptsPrev, std::vector<cv::KeyPoint> &kptsCurr, std::vector<cv::DMatch> &kptMatches)
 {
-    // ...
+    for (cv::DMatch match : kptMatches) {
+        if (boundingBox.roi.contains(kptsCurr[match.trainIdx].pt) && boundingBox.roi.contains(kptsPrev[match.queryIdx].pt))
+            boundingBox.kptMatches.emplace_back(match);
+    }
 }
 
 
@@ -141,18 +146,127 @@ void clusterKptMatchesWithROI(BoundingBox &boundingBox, std::vector<cv::KeyPoint
 void computeTTCCamera(std::vector<cv::KeyPoint> &kptsPrev, std::vector<cv::KeyPoint> &kptsCurr, 
                       std::vector<cv::DMatch> kptMatches, double frameRate, double &TTC, cv::Mat *visImg)
 {
-    // ...
+    std::vector<double> distRatios;
+    cv::KeyPoint matchedPointPrev1, matchedPointCurr1, matchedPointPrev2, matchedPointCurr2;
+    double ratio;
+
+    for (auto match = kptMatches.begin(); match != kptMatches.end(); match++) {
+        matchedPointCurr1 = kptsCurr[match->trainIdx];
+        matchedPointPrev1 = kptsPrev[match->queryIdx];
+        for (auto succeedMatch = match+1; succeedMatch != kptMatches.end(); succeedMatch++) {
+            matchedPointCurr2 = kptsCurr[succeedMatch->trainIdx];
+            matchedPointPrev2 = kptsPrev[succeedMatch->queryIdx];
+
+            double distCurr = cv::norm(matchedPointCurr1.pt - matchedPointCurr2.pt);
+            double distPrev = cv::norm(matchedPointPrev1.pt - matchedPointPrev2.pt);
+           
+            // Avoid outlier and divide by 0
+            if(distCurr > 100 && distPrev > std::numeric_limits<double>::epsilon())
+                distRatios.emplace_back(distCurr/distPrev);
+        }
+    }
+    
+    std::sort(distRatios.begin(), distRatios.end());
+
+    if (distRatios.size() < 1) {
+        TTC = NAN;
+        return;
+    }
+    if (distRatios.size() % 2 == 0) {
+        TTC = - 1 / (frameRate * (1 - distRatios[distRatios.size() / 2]));
+    }
+    else {
+        TTC = - 1 / (frameRate * (1 - distRatios[(distRatios.size() - 1) / 2]));
+    }
 }
 
 
-void computeTTCLidar(std::vector<LidarPoint> &lidarPointsPrev,
-                     std::vector<LidarPoint> &lidarPointsCurr, double frameRate, double &TTC)
+void computeTTCLidar(std::vector<LidarPoint>& lidarPointsPrev,
+    std::vector<LidarPoint>& lidarPointsCurr, double frameRate, double& TTC)
 {
-    // ...
+    //Only the points within the ego line will be considered
+    double distPrev = 0, distCurr = 0;
+    int countPrev = 0, countCurr = 0;
+    for (auto point : lidarPointsCurr) {
+        if (fabs(point.y) < 2) {
+            distCurr += point.x;
+            countCurr++;
+        }
+    }
+    for (auto point : lidarPointsPrev) {
+        if (fabs(point.y) < 2) {
+            distPrev += point.x;
+            countPrev++;
+        }
+    }
+    
+    distPrev /= countPrev;
+    distCurr /= countCurr;
+    double temp = std::fabs(distPrev - distCurr) > 0 ? distPrev - distCurr: 0.0001;
+
+    TTC = distCurr / (temp * frameRate);
 }
 
 
 void matchBoundingBoxes(std::vector<cv::DMatch> &matches, std::map<int, int> &bbBestMatches, DataFrame &prevFrame, DataFrame &currFrame)
 {
-    // ...
+    std::set<int> keys;
+
+    std::multimap<int, int> matchBoxes;
+
+    // use multimap to store all the boxID associated to every key points in prev and curr frame
+
+    for (auto i = matches.begin(); i != matches.end(); i++) {
+
+        int prev, curr;
+
+        bool foundInPrev = false, foundInCurr = false;
+        int prevBoxID, currBoxID;
+
+        for (auto boxIt = prevFrame.boundingBoxes.begin(); boxIt != prevFrame.boundingBoxes.end(); boxIt++) {
+            if (boxIt->roi.contains(prevFrame.keypoints[i->queryIdx].pt)) {
+                prev = boxIt->boxID;
+                foundInPrev = true;
+                break;
+            }
+        }
+
+        for (auto boxIt = currFrame.boundingBoxes.begin(); boxIt != currFrame.boundingBoxes.end(); boxIt++) {
+            if (boxIt->roi.contains(currFrame.keypoints[i->trainIdx].pt)) {
+                curr = boxIt->boxID;
+                foundInCurr = true;
+                break;
+            }
+        }
+
+        if (foundInPrev && foundInCurr) {
+            keys.insert(prev);
+            matchBoxes.insert({ prev, curr });
+        }
+     
+    }
+    // Didn't find anything then return
+    if (keys.size() < 1)
+        return;
+
+    // for every box in prev frame search the best match in curr fram
+    for (auto it = keys.begin(); it != keys.end(); it++) {
+        typedef std::multimap<int, int>::iterator MMAPIterator;
+        // find all the boxex in the curr frame associated with each box in last frame 
+        std::pair<MMAPIterator, MMAPIterator> result = matchBoxes.equal_range(*it);
+
+        // use map to find most occurency/matches of one box in prev frame with curr frame;
+        std::map<int, size_t> frequencyCount;
+
+        for (MMAPIterator it2 = result.first; it2 != result.second; it2++) {
+            frequencyCount[it2->second]++;
+        }
+
+        auto pr = std::max_element(
+            frequencyCount.begin(), frequencyCount.end(), [](auto i, auto j) {return i.second < j.second; }
+        );
+        // Insert
+        bbBestMatches.insert({*it, pr->first});
+    
+    }
 }

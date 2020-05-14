@@ -11,8 +11,8 @@
 #include <opencv2/highgui/highgui.hpp>
 #include <opencv2/imgproc/imgproc.hpp>
 #include <opencv2/features2d.hpp>
-#include <opencv2/xfeatures2d.hpp>
-#include <opencv2/xfeatures2d/nonfree.hpp>
+//#include <opencv2/xfeatures2d.hpp>
+//#include <opencv2/xfeatures2d/nonfree.hpp>
 
 #include "dataStructures.h"
 #include "matching2D.hpp"
@@ -28,11 +28,15 @@ int main(int argc, const char *argv[])
     /* INIT VARIABLES AND DATA STRUCTURES */
 
     // data location
-    string dataPath = "../";
+    //string dataPath = "../";
+    string dataPath = "C:\\Users\\arhyr\\Desktop\\sensor fusion\\SFND_3D_Object_Tracking\\";
 
     // camera
-    string imgBasePath = dataPath + "images/";
-    string imgPrefix = "KITTI/2011_09_26/image_02/data/000000"; // left camera, color
+    //string imgBasePath = dataPath + "images/";
+    //string imgPrefix = "KITTI/2011_09_26/image_02/data/000000"; // left camera, color
+    string imgBasePath = dataPath + "images\\";
+    string imgPrefix = "KITTI\\2011_09_26\\image_02\\data\\000000"; // left camera, color
+
     string imgFileType = ".png";
     int imgStartIndex = 0; // first file index to load (assumes Lidar and camera names have identical naming convention)
     int imgEndIndex = 18;   // last file index to load
@@ -40,13 +44,17 @@ int main(int argc, const char *argv[])
     int imgFillWidth = 4;  // no. of digits which make up the file index (e.g. img-0001.png)
 
     // object detection
-    string yoloBasePath = dataPath + "dat/yolo/";
-    string yoloClassesFile = yoloBasePath + "coco.names";
+    //string yoloBasePath = dataPath + "dat/yolo/";
+    string yoloBasePath = dataPath + "dat\\yolo\\";
+
     string yoloModelConfiguration = yoloBasePath + "yolov3.cfg";
+    string yoloClassesFile = yoloBasePath + "coco.names";
     string yoloModelWeights = yoloBasePath + "yolov3.weights";
 
     // Lidar
-    string lidarPrefix = "KITTI/2011_09_26/velodyne_points/data/000000";
+    //string lidarPrefix = "KITTI/2011_09_26/velodyne_points/data/000000";
+    string lidarPrefix = "KITTI\\2011_09_26\\velodyne_points\\data\\000000";
+
     string lidarFileType = ".bin";
 
     // calibration data for camera and lidar
@@ -92,6 +100,9 @@ int main(int argc, const char *argv[])
         DataFrame frame;
         frame.cameraImg = img;
         dataBuffer.push_back(frame);
+        // Ring buffer
+        if (dataBuffer.size() > dataBufferSize)
+            dataBuffer.erase(dataBuffer.begin());
 
         cout << "#1 : LOAD IMAGE INTO BUFFER done" << endl;
 
@@ -128,11 +139,12 @@ int main(int argc, const char *argv[])
         float shrinkFactor = 0.10; // shrinks each bounding box by the given percentage to avoid 3D object merging at the edges of an ROI
         clusterLidarWithROI((dataBuffer.end()-1)->boundingBoxes, (dataBuffer.end() - 1)->lidarPoints, shrinkFactor, P_rect_00, R_rect_00, RT);
 
+
         // Visualize 3D objects
-        bVis = true;
+        bVis = false;
         if(bVis)
         {
-            show3DObjects((dataBuffer.end()-1)->boundingBoxes, cv::Size(4.0, 20.0), cv::Size(2000, 2000), true);
+            show3DObjects((dataBuffer.end()-1)->boundingBoxes, cv::Size(4.0, 20.0), cv::Size(660, 660), true);
         }
         bVis = false;
 
@@ -140,7 +152,7 @@ int main(int argc, const char *argv[])
         
         
         // REMOVE THIS LINE BEFORE PROCEEDING WITH THE FINAL PROJECT
-        continue; // skips directly to the next image without processing what comes beneath
+        //continue; // skips directly to the next image without processing what comes beneath
 
         /* DETECT IMAGE KEYPOINTS */
 
@@ -156,9 +168,29 @@ int main(int argc, const char *argv[])
         {
             detKeypointsShiTomasi(keypoints, imgGray, false);
         }
-        else
+        else if (detectorType.compare("HARRIS") == 0)
         {
-            //...
+            detKeypointsHarris(keypoints, imgGray, false);
+        }
+        else if (detectorType.compare("FAST") == 0)
+        {
+            detKeypointsModern(keypoints, imgGray, detectorType, false);
+        }
+        else if (detectorType.compare("BRISK") == 0)
+        {
+            detKeypointsModern(keypoints, imgGray, detectorType, false);
+        }
+        else if (detectorType.compare("ORB") == 0)
+        {
+            detKeypointsModern(keypoints, imgGray, detectorType, false);
+        }
+        else if (detectorType.compare("AKAZE") == 0)
+        {
+            detKeypointsModern(keypoints, imgGray, detectorType, false);
+        }
+        else if (detectorType.compare("SIFT") == 0)
+        {
+            detKeypointsModern(keypoints, imgGray, detectorType, false);
         }
 
         // optional : limit number of keypoints (helpful for debugging and learning)
@@ -185,6 +217,17 @@ int main(int argc, const char *argv[])
 
         cv::Mat descriptors;
         string descriptorType = "BRISK"; // BRISK, BRIEF, ORB, FREAK, AKAZE, SIFT
+
+        if (detectorType.compare("AKAZE") != 0 && descriptorType.compare("AKAZE") == 0) {
+            std::cout << "Not allowed combinations of detector and descriptor";
+            break;
+        }
+            
+        if (detectorType.compare("SIFT") == 0 && descriptorType.compare("ORB") == 0) {
+            std::cout << "Not allowed combinations of detector and descriptor";
+            break;
+        }
+
         descKeypoints((dataBuffer.end() - 1)->keypoints, (dataBuffer.end() - 1)->cameraImg, descriptors, descriptorType);
 
         // push descriptors for current frame to end of data buffer
@@ -211,10 +254,9 @@ int main(int argc, const char *argv[])
             (dataBuffer.end() - 1)->kptMatches = matches;
 
             cout << "#7 : MATCH KEYPOINT DESCRIPTORS done" << endl;
-
             
             /* TRACK 3D OBJECT BOUNDING BOXES */
-
+           
             //// STUDENT ASSIGNMENT
             //// TASK FP.1 -> match list of 3D objects (vector<BoundingBox>) between current and previous frame (implement ->matchBoundingBoxes)
             map<int, int> bbBestMatches;
@@ -225,7 +267,6 @@ int main(int argc, const char *argv[])
             (dataBuffer.end()-1)->bbMatches = bbBestMatches;
 
             cout << "#8 : TRACK 3D OBJECT BOUNDING BOXES done" << endl;
-
 
             /* COMPUTE TTC ON OBJECT IN FRONT */
 
